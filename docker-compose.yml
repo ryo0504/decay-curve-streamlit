@@ -1,0 +1,12 @@
+services:
+  streamlit:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    environment:
+      - PYTHONPATH=/workspace
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
