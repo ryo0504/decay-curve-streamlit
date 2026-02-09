@@ -6,27 +6,168 @@ import plotly.graph_objects as go
 
 from src.step2 import build_segment_table, save_segment_csv, boundary_preview
 
-st.title("Step2 (Plotly): ズーム表示範囲内でドラッグ選択 → 区間化")
+def apply_white_theme(fig):
+    fig.update_layout(
+        template="plotly_white",          # ← まずテンプレを白に固定
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(color="black"),
+    )
+    fig.update_xaxes(
+        tickfont=dict(color="black"),     # ← 目盛り文字（0,500,1000…）
+        title_font=dict(color="black"),
+        showgrid=True,
+        gridcolor="lightgray",
+        zeroline=False,
+        showline=True,
+        linecolor="black",
+        ticks="outside",
+    )
+    fig.update_yaxes(
+        tickfont=dict(color="black"),
+        title_font=dict(color="black"),
+        showgrid=True,
+        gridcolor="lightgray",
+        zeroline=False,
+        showline=True,
+        linecolor="black",
+        ticks="outside",
+    )
 
-# --- 入力CSV選択（Step1成果物）---
-step1_dir = Path("artifacts/step1")
-csv_files = sorted(step1_dir.glob("*.csv"))
-if not csv_files:
-    st.warning("artifacts/step1 にCSVがありません。Step1を先に実行してください。")
+
+def step2_base_from_step1(step1_dir: Path, default_base: Path) -> Path:
+    parts = list(step1_dir.parts)
+    if "step1" in parts:
+        idx = parts.index("step1")
+        parts[idx] = "step2"
+        return Path(*parts)
+    return default_base
+
+
+st.title("Bleaching curveの選択")
+
+# -------------------------
+# UI params (Step1入力 & Step2出力)
+# -------------------------
+# =========================
+# Defaults
+# =========================
+DEFAULT_STEP1_DIR = Path("artifacts/step1/raw")
+DEFAULT_STEP2_OUT_BASE = Path("artifacts/step2")
+
+if "step2_step1_dir" not in st.session_state:
+    st.session_state.step2_step1_dir = str(DEFAULT_STEP1_DIR)
+
+if "step2_auto_out" not in st.session_state:
+    st.session_state.step2_auto_out = True
+
+if "step2_out_base_dir" not in st.session_state:
+    # ★ DEFAULT_STEP2_OUT_BASE を基準に、step1_dir から導出
+    st.session_state.step2_out_base_dir = str(
+        step2_base_from_step1(
+            Path(st.session_state.step2_step1_dir),
+            DEFAULT_STEP2_OUT_BASE,
+        )
+    )
+st.subheader("入出力の設定")
+c0, c1, c2 = st.columns([2, 2, 1])
+
+with c0:
+    step1_dir_str = st.text_input(
+        "入力CSVフォルダ（Step1成果物）",
+        value=st.session_state.step2_step1_dir,
+    )
+
+with c2:
+    auto_out = st.checkbox(
+        "出力先を自動追従",
+        value=st.session_state.step2_auto_out,
+    )
+
+# --- state更新 ---
+step1_dir = Path(step1_dir_str)
+st.session_state.step2_step1_dir = step1_dir_str
+st.session_state.step2_auto_out = auto_out
+
+# ★ 自動追従ONなら、DEFAULT_STEP2_OUT_BASE と同期しつつ更新
+if st.session_state.step2_auto_out:
+    st.session_state.step2_out_base_dir = str(
+        step2_base_from_step1(step1_dir, DEFAULT_STEP2_OUT_BASE)
+    )
+
+with c1:
+    out_base_dir_str = st.text_input(
+        "出力フォルダ（Step2成果物）",
+        value=st.session_state.step2_out_base_dir,
+    )
+    st.session_state.step2_out_base_dir = out_base_dir_str
+
+step1_dir = Path(st.session_state.step2_step1_dir)
+out_base_dir = Path(st.session_state.step2_out_base_dir)
+
+st.caption("※ Docker運用ではパスはコンテナ内パスです。ホスト側のファイルを読む場合は docker-compose の volumes 設定が必要です。")
+
+# -------------------------
+# 入力CSV検出
+# -------------------------
+if not step1_dir.exists():
+    st.error(f"入力フォルダが見つかりません: {step1_dir}")
     st.stop()
 
-selected = st.selectbox("処理するCSVを選択", csv_files, format_func=lambda p: p.name)
-df = pd.read_csv(selected)
+csv_files = sorted(step1_dir.rglob("*.csv"))  # 下位フォルダも含めて拾う（迷い減る）
+if not csv_files:
+    st.warning(f"{step1_dir} 配下にCSVがありません。Step1を先に実行してください。")
+    st.stop()
 
-t = df["time"].to_numpy()
-a = df["abs"].to_numpy()
-t_min, t_max = float(np.min(t)), float(np.max(t))
+st.success(f"CSV検出: {len(csv_files)} files")
+
+with st.expander("検出したCSV（先頭30件）"):
+    for p in csv_files[:30]:
+        st.write(str(p))
+
+# -------------------------
+# 選択（変更されたらセグメントをリセット）
+# -------------------------
+selected = st.selectbox(
+    "処理するCSVを選択",
+    csv_files,
+    format_func=lambda p: str(p.relative_to(step1_dir)) if p.is_relative_to(step1_dir) else p.name,
+    key="step2_selected_csv",
+)
+
+# セグメントstate初期化（ファイルを変えたとき事故るので）
+if "step2_last_selected" not in st.session_state:
+    st.session_state.step2_last_selected = None
+
+if st.session_state.step2_last_selected != str(selected):
+    st.session_state.step2_last_selected = str(selected)
+    st.session_state.segments_time = []
+    st.session_state.last_saved_segments_time = None
 
 # --- state ---
 if "segments_time" not in st.session_state:
     st.session_state.segments_time = []  # list[(t0,t1)]
 if "last_saved_segments_time" not in st.session_state:
     st.session_state.last_saved_segments_time = None  # for post-save plot
+
+# -------------------------
+# CSV読み込み
+# -------------------------
+df = pd.read_csv(selected)
+
+# 列チェック（step1出力が time/abs 前提）
+required_cols = {"time", "abs"}
+if not required_cols.issubset(df.columns):
+    st.error(f"CSVに必要な列 {required_cols} がありません。見つかった列: {list(df.columns)}")
+    st.stop()
+
+t = df["time"].to_numpy()
+a = df["abs"].to_numpy()
+t_min, t_max = float(np.min(t)), float(np.max(t))
+
+st.info(f"選択中: {selected.name}（N={len(df)}）")
+st.write("出力先（自動）:", str(out_base_dir / f"{Path(selected).stem}_segments.csv"))
+
 
 # =========================
 # 1) 表示範囲（ズーム）をUIで指定
@@ -73,7 +214,7 @@ fig.add_trace(
         x=t_view,
         y=a_view,
         mode="markers",
-        marker=dict(size=3),
+        marker=dict(size=4, color="rgba(0, 0, 128, 0.85)"),  # ←濃く
         name="data(view)",
         customdata=np.arange(v0, v1),  # 元データの index を持たせる
     )
@@ -88,7 +229,11 @@ fig.update_layout(
     dragmode="select",  # "lasso" にしたければここだけ変更
     title="表示範囲内でドラッグ選択 → 下で区間に追加",
     margin=dict(l=20, r=20, t=50, b=20),
+    xaxis_title="Time (s)",
+    yaxis_title="Abs",
 )
+apply_white_theme(fig)  # ★追加
+
 fig.update_xaxes(range=[view_t0, view_t1])
 fig.update_yaxes(range=list(y_range))
 
@@ -155,7 +300,10 @@ if st.button("確定してCSVを作成"):
     if df_result.empty:
         st.error("区間が未設定です。")
     else:
-        out_csv = Path("artifacts/step2") / f"{selected.stem}_segments.csv"
+        out_base_dir = Path(st.session_state.step2_out_base_dir)
+        out_base_dir.mkdir(parents=True, exist_ok=True)
+
+        out_csv = out_base_dir / f"{Path(selected).stem}_segments.csv"
         save_segment_csv(df_result, out_csv)
         st.success(f"保存しました: {out_csv}")
 
@@ -209,7 +357,7 @@ if st.session_state.last_saved_segments_time:
         aa = np.concatenate(seg_points_a)
 
         fig2 = go.Figure()
-        fig2.add_trace(go.Scattergl(x=tt, y=aa, mode="markers", marker=dict(size=3), name="selected"))
+        fig2.add_trace(go.Scattergl(x=tt, y=aa, mode="markers", marker=dict(size=4, color="rgba(0, 0, 128, 0.85)"), name="selected"))
 
         for (s0, s1) in st.session_state.last_saved_segments_time:
             fig2.add_vrect(x0=s0, x1=s1, fillcolor="red", opacity=0.15, line_width=0)
@@ -222,7 +370,14 @@ if st.session_state.last_saved_segments_time:
         pad = 0.05 * (y1 - y0) if y1 > y0 else 1.0
         fig2.update_yaxes(range=[y0 - pad, y1 + pad])
 
-        fig2.update_layout(height=420, margin=dict(l=20, r=20, t=40, b=20))
+        fig2.update_layout(
+            height=420, 
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_title="Time (s)",
+            yaxis_title="Abs",
+        )
+        apply_white_theme(fig2)  # ★追加
+
         st.plotly_chart(fig2, use_container_width=True)
     else:
         st.info("選択範囲に点がありませんでした。")
