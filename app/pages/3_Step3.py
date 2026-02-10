@@ -13,98 +13,119 @@ from src.step3 import (
 )
 
 st.set_page_config(page_title="Step3: Kinetics Fitting", layout="wide")
-st.title("速度論モデルでのフィッティング")
+st.title("Step3: 速度論モデルでのフィッティング")
 
 # ============================================================
 # 0) Utilities
 # ============================================================
 ARTIFACTS_ROOT = Path("artifacts")
+STEP2_ROOT = ARTIFACTS_ROOT / "step2" / "raw"
+STEP3_ROOT = ARTIFACTS_ROOT / "step3"
 
-def list_candidate_dirs(root: Path, default: Path) -> list[Path]:
-    """UI用：root配下のディレクトリ候補を列挙（default含む）"""
-    dirs = []
-    if default.exists():
-        dirs.append(default)
-    if root.exists():
-        dirs += [p for p in sorted(root.glob("*")) if p.is_dir()]
-    # 重複除去（順序保持）
-    seen = set()
-    uniq = []
-    for d in dirs:
-        if d.resolve() not in seen:
-            uniq.append(d)
-            seen.add(d.resolve())
-    return uniq
+def list_dirs_one_level(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return [p for p in sorted(root.glob("*")) if p.is_dir()]
 
-def ensure_has_csv(in_dir: Path) -> list[Path]:
-    csvs = sorted(in_dir.glob("*.csv"))
-    return csvs
+def list_csv_files(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted(root.glob("*.csv"))
 
-def build_synced_out_dir(in_dir: Path) -> Path:
-    """
-    in_dir が artifacts/step2/raw 配下なら、その raw 配下の相対パスを
-    artifacts/step3 配下へ写像する。
+def pick_path_with_fallback(label: str, default_path: Path) -> Path:
+    """テキスト入力で柔軟にパス上書きできるようにする"""
+    ptxt = st.text_input(label, value=str(default_path))
+    return Path(ptxt).expanduser()
 
-    例:
-      artifacts/step2/raw           -> artifacts/step3
-      artifacts/step2/raw/foo       -> artifacts/step3/foo
-      artifacts/step2/raw/foo/bar   -> artifacts/step3/foo/bar
-    """
-    in_dir = in_dir.resolve()
-    root = ARTIFACTS_ROOT.resolve()
+def build_step3_out_root(sample_name: str, temp_name: str) -> Path:
+    # artifacts/step3/{sample}/{temp}
+    return STEP3_ROOT / sample_name / temp_name
 
-    step2_raw = (root / "step2" / "raw").resolve()
-
-    try:
-        tail = in_dir.relative_to(step2_raw)   # raw配下だけ取り出す（空でもOK）
-        return (root / "step3" / tail).resolve()
-    except Exception:
-        # 想定外の場所なら artifacts/step3/<入力フォルダ名> にまとめる
-        return (root / "step3" / in_dir.name).resolve()
-
+def default_step2_dir(sample_name: str, temp_name: str) -> Path:
+    # artifacts/step2/raw/{sample}/{temp}
+    return STEP2_ROOT / sample_name / temp_name
 
 
 # ============================================================
-# 1) Input folder selection (Step2 CSV)
+# 1) Input selection (sample/temp driven)
 # ============================================================
 st.subheader("入力（Step2 CSV）")
 
+colS, colT = st.columns([2, 2])
 
-STEP2_ROOT = ARTIFACTS_ROOT / "step2" / "raw"
-default_in_dir = STEP2_ROOT
-candidate_dirs = list_candidate_dirs(STEP2_ROOT, default_in_dir)
+with colS:
+    sample_dirs = list_dirs_one_level(STEP2_ROOT)
 
+    # legacy: artifacts/step2/raw/*.csv しか無いケースの救済
+    legacy_csvs = list_csv_files(STEP2_ROOT)
 
+    if (not sample_dirs) and legacy_csvs:
+        st.info("旧構成（artifacts/step2/raw/*.csv）を検出しました。legacy モードで動作します。")
+        sample_name = "__legacy__"
+        temp_name = "__legacy__"
+    else:
+        if not sample_dirs:
+            st.error("artifacts/step2/raw 配下に sample フォルダが見つかりません。")
+            st.stop()
 
-colA, colB = st.columns([2, 3])
-with colA:
-    in_dir = st.selectbox(
-        "Step2 CSV のフォルダを選択",
-        options=candidate_dirs,
-        index=0 if default_in_dir in candidate_dirs else 0,
-        format_func=lambda p: str(p),
-    )
+        sample_dir = st.selectbox(
+            "sample_name",
+            options=sample_dirs,
+            format_func=lambda p: p.name,
+        )
+        sample_name = sample_dir.name
 
-with colB:
-    # 手入力でも変えられるように（フォルダピッカーが無いので実用的）
-    in_dir_text = st.text_input("またはパスを直接入力", value=str(in_dir))
-    in_dir = Path(in_dir_text).expanduser()
+with colT:
+    if sample_name == "__legacy__":
+        temp_name = "__legacy__"
+    else:
+        temp_dirs = list_dirs_one_level(STEP2_ROOT / sample_name)
+        if not temp_dirs:
+            st.error(f"sample={sample_name} 配下に temp フォルダが見つかりません。")
+            st.stop()
 
-csv_files = ensure_has_csv(in_dir)
+        temp_dir = st.selectbox(
+            "temp",
+            options=temp_dirs,
+            format_func=lambda p: p.name,
+        )
+        temp_name = temp_dir.name
+
+# デフォルト入力ディレクトリ
+if sample_name == "__legacy__":
+    default_in_dir = STEP2_ROOT
+else:
+    default_in_dir = default_step2_dir(sample_name, temp_name)
+
+# ディレクトリは直入力で上書き可能
+in_dir = pick_path_with_fallback("Step2 CSV フォルダ（必要ならパス直入力で上書き）", default_in_dir)
+
+st.caption(f"Input dir: {in_dir}")
+
 if not in_dir.exists():
     st.error(f"フォルダが存在しません: {in_dir}")
     st.stop()
 
+csv_files = list_csv_files(in_dir)
 if not csv_files:
     st.warning(f"{in_dir} にCSVがありません。Step2を先に実行してください。")
     st.stop()
 
-selected = st.selectbox(
+# まずは「フォルダ内から選択」のデフォルト
+selected_csv = st.selectbox(
     "フィットする Step2 CSV を選択",
-    csv_files,
+    options=csv_files,
     format_func=lambda p: p.name,
 )
-df_step2 = pd.read_csv(selected)
+
+# ただし最終的にはパス直入力で上書きできるようにする（Step6と同じ）
+selected_csv = pick_path_with_fallback("または Step2 CSV のパスを直接入力", selected_csv)
+
+if not selected_csv.exists():
+    st.error(f"CSVが見つかりません: {selected_csv}")
+    st.stop()
+
+df_step2 = pd.read_csv(selected_csv)
 
 
 # ============================================================
@@ -144,28 +165,22 @@ st.caption(f"→ 出力名: {column_name}")
 # ============================================================
 st.subheader("速度論モデル")
 
-# いまは fit_f1_on_combined しか無いので、UIは将来拡張前提の形にしておく
 MODEL_REGISTRY = {
     "F1 (default)": {
         "fit_func": fit_f1_on_combined,
         "label": "現在のデフォルトモデル",
-        # ここに数式イメージなど出したければ latex を置ける（例）
         "latex": r"y = A \left( 1 - \frac{1 - e^{D x}}{1 - C e^{D x}} \right) + B"
     },
-    # 将来追加するならここに：
-    # "F2": {"fit_func": fit_f2_on_combined, "label": "...", "latex": r"..."},
 }
 
 model_key = st.selectbox(
     "使用するモデル",
     options=list(MODEL_REGISTRY.keys()),
     index=0,
-    help="デフォルトは現状のモデル（F1）です。将来モデルを追加したらここで切替可能になります。",
 )
 
 with st.expander("モデルの説明（表示）", expanded=False):
     st.write(MODEL_REGISTRY[model_key]["label"])
-    # 必要なら latex を表示
     st.latex(MODEL_REGISTRY[model_key]["latex"])
 
 
@@ -194,7 +209,9 @@ with col3:
 # ============================================================
 # 5) Run fitting
 # ============================================================
-if st.button("統合 → フィット実行"):
+run = st.button("統合 → フィット実行")
+
+if run:
     try:
         combined = build_combined_dataset_from_segments(
             df_step2,
@@ -207,10 +224,13 @@ if st.button("統合 → フィット実行"):
             p0=(float(p0_B), float(p0_C), float(p0_D)),
         )
 
-        st.session_state.fit_res = res
-        st.session_state.fit_column_name = column_name
-        st.session_state.fit_model_key = model_key
-        st.session_state.fit_in_dir = str(in_dir)
+        st.session_state.step3_fit_res = res
+        st.session_state.step3_column_name = column_name
+        st.session_state.step3_model_key = model_key
+        st.session_state.step3_in_dir = str(in_dir)
+        st.session_state.step3_selected_csv = str(selected_csv)
+        st.session_state.step3_sample = sample_name
+        st.session_state.step3_temp = temp_name
 
         st.success(
             f"フィット成功：データ点数 = {len(combined)}, "
@@ -222,10 +242,10 @@ if st.button("統合 → フィット実行"):
 
 
 # ============================================================
-# 6) Show results
+# 6) Show results + Save
 # ============================================================
-if "fit_res" in st.session_state:
-    res = st.session_state.fit_res
+if "step3_fit_res" in st.session_state:
+    res = st.session_state.step3_fit_res
 
     B, C, D = res.popt
     eB, eC, eD = res.perr
@@ -235,13 +255,13 @@ if "fit_res" in st.session_state:
 
     df_params = build_param_df(
         popt=res.popt,
-        column_name=st.session_state.fit_column_name,
+        column_name=st.session_state.step3_column_name,
     )
     st.dataframe(df_params, use_container_width=True)
 
     st.write(
         {
-            "model": st.session_state.get("fit_model_key", "N/A"),
+            "model": st.session_state.get("step3_model_key", "N/A"),
             "R2": res.r2,
             "t95": res.t95,
             "k1": k1,
@@ -249,9 +269,7 @@ if "fit_res" in st.session_state:
         }
     )
 
-    # ========================================================
-    # Plot (matplotlib)
-    # ========================================================
+    # ---- Plot ----
     st.subheader("フィット結果（規格化データ・結合）")
 
     x = res.df_fit["norm_time"].to_numpy()
@@ -268,20 +286,23 @@ if "fit_res" in st.session_state:
 
     st.pyplot(fig, use_container_width=True)
 
-
-    # ========================================================
-    # Save outputs (out folder synced with input folder)
-    # ========================================================
+    # ---- Save ----
     st.subheader("保存")
 
-    # out_dir は入力ディレクトリに同期（UIからも編集可能）
-    synced_out_root = build_synced_out_dir(Path(st.session_state.get("fit_in_dir", str(in_dir))))
+    sample_name = st.session_state.get("step3_sample", "unknown_sample")
+    temp_name = st.session_state.get("step3_temp", "unknown_temp")
+
+    # 出力先：入力選択に同期
+    if sample_name == "__legacy__":
+        default_out_root = STEP3_ROOT / "legacy"
+    else:
+        default_out_root = build_step3_out_root(sample_name, temp_name)
+
     colO1, colO2 = st.columns([2, 3])
     with colO1:
-        out_root = st.text_input("出力フォルダ（入力フォルダに同期）", value=str(synced_out_root))
-        out_root = Path(out_root).expanduser()
+        out_root = pick_path_with_fallback("出力フォルダ（入力に同期）", default_out_root)
     with colO2:
-        st.caption("例: artifacts/step3/step2 など。入力フォルダを変えると同期先の提案も変わります。")
+        st.caption("基本は artifacts/step3/{sample}/{temp} 配下に出す想定（必要なら上書き可）。")
 
     combined_dir = out_root / "combined_data"
     param_dir = out_root / "fit_params"
@@ -291,6 +312,7 @@ if "fit_res" in st.session_state:
     param_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
+    column_name = st.session_state.get("step3_column_name", "unknown")
     combined_csv = combined_dir / f"{column_name}_combined.csv"
     param_csv = param_dir / f"{column_name}_params.csv"
     fig_path = fig_dir / f"{column_name}.png"
@@ -300,14 +322,13 @@ if "fit_res" in st.session_state:
         save_fit_csv(res.df_fit, combined_csv)
 
         # パラメータ
-        # df_params.to_csv(param_csv, index=False)
         df_params_save = pd.DataFrame(
             {column_name: [B, C, D, k1, k2]},
             index=["opt_B", "opt_C", "opt_D", "k_1", "k_2"]
         )
         df_params_save.to_csv(param_csv, index=True, header=True, index_label="")
 
-        # 図（matplotlib → PNG）
+        # 図
         fig.savefig(fig_path, bbox_inches="tight")
 
         st.success("保存が完了しました")
