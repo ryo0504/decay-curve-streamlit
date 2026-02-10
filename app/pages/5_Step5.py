@@ -33,7 +33,7 @@ def list_dirs_one_level(root: Path, default: Path | None = None) -> list[Path]:
 
 def build_synced_step5_out_dir(vis_dir: Path) -> Path:
     """
-    vis_dir が data/raw 配下なら、その相対パスを artifacts/step5 配下へ写像する。
+    vis_dir が data/raw 配下なら、その相対パスを artifacts/step5 配下へ設定する。
     例:
       data/raw/S-5M/0/vis -> artifacts/step5/S-5M/0/vis
     """
@@ -113,7 +113,7 @@ with col1:
 with col2:
     wl_max = st.number_input("λ_max (nm)", value=550.0)
 
-st.caption("注意: nmを波数(cm^-1)に変換して、その範囲で photon_count を trapz 積分します。")
+st.caption("注意: nmを波数(cm^-1)に変換して、その範囲で photon_count を積分します。")
 
 # ============================================================
 # 3) Run
